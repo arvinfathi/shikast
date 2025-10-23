@@ -21,8 +21,8 @@ const GAME_CONFIG = {
   MISSIONS: [
     {
       level: 0,
-      narrationUrl: 'https://invalid-url-that-will-cause-403.mp3', // Intentionally invalid URL for testing
-      // narrationUrl: 'https://cdn.pixabay.com/download/audio/2022/03/14/audio_522b656909.mp3', // Valid URL
+      // narrationUrl: 'https://invalid-url-that-will-cause-403.mp3', // Intentionally invalid URL for testing
+      narrationUrl: 'https://cdn.pixabay.com/download/audio/2022/03/14/audio_522b656909.mp3', // Valid URL
       description: "You are in a dark room. A choice appears.",
       descriptionStayDurationMs: 3000,
       left: {
@@ -771,10 +771,10 @@ class EndText {
 class DescriptionText {
   static CONFIG = {
     COLOR: 0xaaaaaa,
-    SIZE: 0.3,
+    SIZE: 0.4,
     HEIGHT: 0.01,
     FADE_DURATION_MS: 1000,
-    DISSOLVE_PARTICLE_COUNT: 5000,
+    DISSOLVE_PARTICLE_COUNT: 1000,
   };
 
   constructor(scene, text, font, camera) {
@@ -1057,14 +1057,14 @@ class ChoicePanel {
 class TimerBar {
   CONFIG = {
     DURATION: 15000, // ms
-    BAR_HEIGHT: 0.1,
-    Y_OFFSET: 0.7, // Distance above panels
+    BAR_HEIGHT: 0.05,
+    Y_OFFSET: 0.3, // Distance above panels
     COLORS: {
       GREEN: new THREE.Color(0x00ff00),
       YELLOW: new THREE.Color(0xffff00),
       RED: new THREE.Color(0xff0000)
     },
-    MAX_PARTICLES: 5000 // max particles when dissolving
+    MAX_PARTICLES: 2000 // max particles when dissolving
   };
 
   constructor(scene, particleManager, onTimeout, zPos) {

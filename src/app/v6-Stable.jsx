@@ -22,7 +22,6 @@ const GAME_CONFIG = {
     {
       level: 0,
       narrationUrl: 'https://invalid-url-that-will-cause-403.mp3', // Intentionally invalid URL for testing
-      // narrationUrl: 'https://cdn.pixabay.com/download/audio/2022/03/14/audio_522b656909.mp3', // Valid URL
       description: "You are in a dark room. A choice appears.",
       descriptionStayDurationMs: 3000,
       left: {
@@ -40,7 +39,7 @@ const GAME_CONFIG = {
     },
     {
       level: 1,
-      narrationUrl: 'https://cdn.pixabay.com/download/audio/2022/03/14/audio_522b656909.mp3', // Valid URL
+      narrationUrl: null, //'https://cdn.pixabay.com/download/audio/2022/03/14/audio_522b656909.mp3', // Valid URL for testing
       description: "The consequences of your choice are clear.",
       descriptionStayDurationMs: 4000,
       left: {
@@ -93,8 +92,7 @@ class AudioManager {
 
     this.narrationPlayer = null;
     this.isStarted = false;
-    this.narrationManuallyStopped = false;
-    this.narrationEndedCallback = null; // Store the callback
+    this.narrationManuallyStopped = false; // Flag to prevent double callback
   }
 
   async start() {
@@ -121,96 +119,83 @@ class AudioManager {
   }
 
   /**
-   * Plays narration. Calls onEnded *once* when finished naturally, stopped, or if an error occurs.
+   * Plays a narration audio file from a URL. Handles errors gracefully.
+   * @param {string | null} url - The URL of the .mp3 or .wav file.
+   * @param {function} onEnded - Callback function to execute when playback finishes or fails.
    */
   playNarration(url, onEnded) {
-    // Store the callback, ensure it's called only once
+    // Ensure onEnded is always called asynchronously and only once
     let endedCalled = false;
-    this.narrationEndedCallback = () => {
+    const safeOnEnded = () => {
         if (!endedCalled) {
             endedCalled = true;
-            this.narrationEndedCallback = null; // Clear callback
             requestAnimationFrame(onEnded);
         }
     };
 
     if (!url || !this.isStarted) {
       if (!url) console.log("No narration URL, skipping.");
-      else console.warn("Audio context not started. Skipping narration.");
-      this.narrationEndedCallback(); // Call immediately if skipping
+      else if (!this.isStarted) console.warn("Audio context not started. Skipping narration.");
+      safeOnEnded();
       return;
     }
 
-    this.stopNarration(); // Clean up previous player
+    // Stop and dispose any previous narration player cleanly
+    this.stopNarration(); // This now sets the flag and disposes
 
     try {
-      this.narrationManuallyStopped = false;
+      this.narrationManuallyStopped = false; // Reset flag for new playback
       this.narrationPlayer = new Tone.Player({
         url: url,
-        autostart: false, // Don't autostart
+        autostart: false,
         volume: this.CONFIG.NARRATION_VOLUME,
         onload: () => {
-           console.log("Narration loaded:", url);
-           // Start playback after a short delay to potentially avoid timing issues
+           console.log("Narration loaded, starting playback:", url);
+           // Add a slight delay before starting to potentially avoid timing issues
            setTimeout(() => {
-                if (this.narrationPlayer && this.narrationPlayer.loaded && !this.narrationManuallyStopped) {
+                if (this.narrationPlayer && this.narrationPlayer.loaded) {
                     try {
-                        console.log("Starting narration playback.");
                         this.narrationPlayer.start();
                     } catch (e) {
-                         // *** Catch start error ***
                          console.error("Error starting Tone.Player:", e);
-                         if(e.message.includes("Start time must be strictly greater")) {
-                             console.warn("Attempted to start player too soon. Retrying...");
-                             // Retry after a slightly longer delay
-                             setTimeout(() => {
-                                 if (this.narrationPlayer && this.narrationPlayer.loaded && !this.narrationManuallyStopped) {
-                                     try { this.narrationPlayer.start(); } catch (e2) { console.error("Retry start failed:", e2); this.narrationEndedCallback(); this.stopNarration();}
-                                 } else if (!this.narrationManuallyStopped) { this.narrationEndedCallback();}
-                             }, 100);
-                         } else {
-                            this.narrationEndedCallback(); // Call callback on other start errors
-                            this.stopNarration();
-                         }
+                         safeOnEnded(); // Continue flow if start fails
+                         this.stopNarration(); // Clean up
                     }
-                } else if (!this.narrationManuallyStopped) {
-                     console.log("Narration player not ready or stopped before starting.");
-                     this.narrationEndedCallback(); // Ensure callback if player disposed before start
                 }
-           }, 50);
+           }, 50); // 50ms delay
         },
         onstop: () => {
-          // Check if stopped naturally (not manually and player exists)
+          // Only trigger onEnded if playback finished naturally
           if (this.narrationPlayer && !this.narrationManuallyStopped) {
-            console.log("Narration finished naturally via onstop.");
-            this.narrationEndedCallback(); // Call stored callback
+            console.log("Narration finished naturally.");
+            safeOnEnded();
+            // No need to dispose here, let stopNarration handle it if needed later
           } else {
-             console.log("Narration stopped manually or disposed, onstop ignored for callback.");
+            console.log("Narration stopped manually or disposed.");
           }
-          // Always dispose when stopped
-          if (this.narrationPlayer) {
-             this.narrationPlayer.dispose();
-             this.narrationPlayer = null;
-          }
+          // Dispose should happen after checks or in stopNarration
+           if (this.narrationPlayer) {
+              this.narrationPlayer.dispose();
+              this.narrationPlayer = null;
+           }
         }
       }).toDestination();
 
       this.narrationPlayer.onerror = (error) => {
         console.error("Error with Tone.Player:", url, error);
-        this.narrationEndedCallback(); // Call callback on error
-        this.stopNarration(); // Clean up
+        safeOnEnded();
+        this.stopNarration(); // Clean up on error
       };
 
-      // Load the audio buffer
       this.narrationPlayer.load(url).catch(error => {
           console.error("Tone.Player failed to load buffer:", url, error);
-          this.narrationEndedCallback(); // Call callback on load error
-          this.stopNarration(); // Clean up
+          safeOnEnded();
+          this.stopNarration(); // Clean up on load error
       });
 
     } catch (e) {
       console.error("Failed to create Tone.Player:", e);
-      this.narrationEndedCallback(); // Call callback if creation fails
+      safeOnEnded();
     }
   }
 
@@ -221,32 +206,24 @@ class AudioManager {
 
   stopNarration() {
     if (this.narrationPlayer) {
-      console.log("Stopping narration manually.");
-      this.narrationManuallyStopped = true;
+      this.narrationManuallyStopped = true; // Set flag
       try {
-        // Stop playback - this triggers the onstop callback
-        this.narrationPlayer.stop();
+          this.narrationPlayer.stop(); // This triggers onstop
       } catch(e) {
-        console.warn("Error stopping narration player:", e);
-        // Ensure disposal even if stop fails
-        if (this.narrationPlayer) {
-           this.narrationPlayer.dispose();
-           this.narrationPlayer = null;
-        }
+          console.warn("Error stopping narration player:", e);
+          // Manually dispose if stop failed
+           if (this.narrationPlayer) {
+              this.narrationPlayer.dispose();
+              this.narrationPlayer = null;
+           }
       }
-      // Disposal is handled in onstop
+      // Disposal is now handled within the onstop callback
     }
-     // Call the ended callback if it hasn't been called yet and stop was invoked
-     // This ensures the game flow continues if narration is cut short by user action
-     if(this.narrationEndedCallback) {
-         console.log("Calling narrationEndedCallback due to manual stop.");
-         this.narrationEndedCallback();
-     }
   }
 
   dispose() {
     this.stopAmbient();
-    this.stopNarration();
+    this.stopNarration(); // Ensure player is stopped and disposed
     this.ambientSynth.dispose();
     this.dissolveSynth.dispose();
     this.selectSynth.dispose();
@@ -257,6 +234,7 @@ class AudioManager {
 // SCENE MANAGER
 // ----------------------------------------
 class SceneManager {
+  // *** Make CONFIG static ***
   static CONFIG = {
     CAMERA_Z: 5,
     BLOOM_PARAMS: { strength: 0.5, radius: 0.6, threshold: 0.1 },
@@ -275,6 +253,7 @@ class SceneManager {
 
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(75, w / h, 0.1, 1000);
+    // *** Use static CONFIG ***
     this.camera.position.z = SceneManager.CONFIG.CAMERA_Z;
     this.originalCameraPos = this.camera.position.clone();
 
@@ -289,6 +268,7 @@ class SceneManager {
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
 
+    // *** Use static CONFIG ***
     this.bloomPass = new UnrealBloomPass(
       new THREE.Vector2(w, h),
       SceneManager.CONFIG.BLOOM_PARAMS.strength || 0,
@@ -297,6 +277,7 @@ class SceneManager {
     );
     this.bloomPass.enabled = !!(SceneManager.CONFIG.BLOOM_PARAMS.strength && SceneManager.CONFIG.BLOOM_PARAMS.strength > 0);
 
+    // *** Use static CONFIG ***
     this.filmPass = new FilmPass(
       SceneManager.CONFIG.FILM_PARAMS.noiseIntensity || 0,
       SceneManager.CONFIG.FILM_PARAMS.scanlineIntensity || 0,
@@ -339,10 +320,12 @@ class SceneManager {
   }
 
   setPostProcessingEnabled = (enabled) => {
+    // *** Use static CONFIG ***
     this.bloomPass.enabled = enabled && !!(SceneManager.CONFIG.BLOOM_PARAMS.strength && SceneManager.CONFIG.BLOOM_PARAMS.strength > 0);
     this.filmPass.enabled = enabled;
   };
 
+  // Animate fade (0 to 1)
   fadeTo = (targetFade, duration = 1.0) => {
     if (duration <= 0) {
       this.fadePass.material.uniforms.uFade.value = targetFade;
@@ -370,6 +353,7 @@ class SceneManager {
 
   zoomToPanel = (panel) => {
     return new Promise((resolve) => {
+      // *** Use static CONFIG ***
       const duration = SceneManager.CONFIG.ZOOM_DURATION;
       const cam = this.camera;
 
@@ -379,6 +363,7 @@ class SceneManager {
       const width = height * cam.aspect;
 
       const startPos = cam.position.clone();
+      // *** Use static CONFIG ***
       const endPos = new THREE.Vector3(panel.position.x, panel.position.y, panel.position.z + SceneManager.CONFIG.CAMERA_Z);
       const startScale = panel.scale.clone();
       const endScale = new THREE.Vector3(
@@ -410,6 +395,7 @@ class SceneManager {
 
   resetCamera = (targetZ) => {
      return new Promise((resolve) => {
+      // *** Use static CONFIG ***
       const duration = SceneManager.CONFIG.RESET_DURATION;
       const cam = this.camera;
 
@@ -485,18 +471,8 @@ class ParticleManager {
         }
 
         this.audioManager.playDissolve();
-        let samplingSucceeded = false; // Flag to track success
 
         try {
-          // Use computeBoundingBox if available, otherwise just use object properties if they exist
-          if (object.geometry?.computeBoundingBox) {
-            object.geometry.computeBoundingBox();
-          } else if (object.geometry?.boundingBox) {
-            // Already computed or doesn't need recomputing
-          } else {
-            console.warn("Cannot compute bounding box for dissolve, object might not sample correctly.");
-          }
-
           const sampler = new MeshSurfaceSampler(object).build();
           const count = particleCount;
           const positions = new Float32Array(count * 3);
@@ -532,24 +508,17 @@ class ParticleManager {
 
           this.scene.add(particles);
           this.particleSystems.push(particles);
-          samplingSucceeded = true; // Mark as successful
 
           // Resolve the promise after the dissolve duration
           setTimeout(resolve, this.CONFIG.DISSOLVE_DURATION_MS);
 
-        } catch (err) { // <<< The error object 'err' is defined *here*
-          console.warn('dissolveObject sampling failed:', object, err);
-          // Fallback: Remove object immediately and resolve
-          this.removeObject(object);
-          resolve();
+        } catch (err) {
+          console.warn('dissolveObject sampling failed:', err);
+          resolve(); // Resolve even if sampling fails
         }
 
-        // *** FIX: Remove original object immediately *only* if sampling succeeded ***
-        if (samplingSucceeded) {
-           this.removeObject(object);
-        }
-        // *** REMOVED: if (! (err instanceof Error)) { ... } *** <<< This caused the ReferenceError
-
+        // Remove original object immediately
+        this.removeObject(object);
      }); // End of promise
   };
 
@@ -557,27 +526,19 @@ class ParticleManager {
   removeObject = (object) => {
     if (!object) return;
 
-    // Dispose of materials and geometries
     object.traverse((child) => {
-        if (child instanceof THREE.Mesh) {
-            child.geometry?.dispose();
-            if (Array.isArray(child.material)) {
-                child.material.forEach(material => material.dispose());
-            } else if (child.material) {
-                child.material.dispose();
-            }
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) {
+        if (Array.isArray(child.material)) {
+          child.material.forEach(m => m.dispose && m.dispose());
+        } else {
+          child.material.dispose && child.material.dispose();
         }
+      }
     });
 
-
-    if (object.parent) {
-      object.parent.remove(object);
-    } else {
-      // If object wasn't added to scene (possible race condition)
-      console.warn("Attempted to remove object not in scene:", object);
-    }
+    if (object.parent) object.parent.remove(object);
   };
-
 
   update = () => {
     for (let idx = this.particleSystems.length - 1; idx >= 0; idx--) {
@@ -771,15 +732,16 @@ class EndText {
 class DescriptionText {
   static CONFIG = {
     COLOR: 0xaaaaaa,
-    SIZE: 0.3,
+    SIZE: 0.4,
     HEIGHT: 0.01,
     FADE_DURATION_MS: 1000,
-    DISSOLVE_PARTICLE_COUNT: 5000,
+    // STAY_DURATION_MS removed, use per-level config
+    DISSOLVE_PARTICLE_COUNT: 1000, // Fewer particles for text
   };
 
   constructor(scene, text, font, camera) {
     this.scene = scene;
-    this.camera = camera;
+    this.camera = camera; // Store camera reference if needed for positioning
     this.mesh = null;
     this.createMesh(text, font);
   }
@@ -801,20 +763,21 @@ class DescriptionText {
     });
 
     this.mesh = new THREE.Mesh(geo, mat);
+    // Position dynamically based on current camera Z
     const currentCamZ = this.camera.position.z;
+    // *** Use static SceneManager.CONFIG ***
     this.mesh.position.set(0, 0, currentCamZ - SceneManager.CONFIG.CAMERA_Z * 0.8);
     this.scene.add(this.mesh);
   }
 
+  // Animate opacity
   fadeTo = (targetOpacity, duration) => {
     return new Promise((resolve) => {
-      if (!this.mesh || !this.mesh.material) return resolve(); // Added material check
+      if (!this.mesh) return resolve();
       const startOpacity = this.mesh.material.opacity;
       const startTime = performance.now();
 
       const tick = (now) => {
-         if (!this.mesh || !this.mesh.material) return; // Check again in tick
-
         const elapsed = now - startTime;
         const progress = Math.min(elapsed / duration, 1.0);
         this.mesh.material.opacity = THREE.MathUtils.lerp(startOpacity, targetOpacity, progress);
@@ -832,6 +795,8 @@ class DescriptionText {
   fadeIn = () => {
     return this.fadeTo(1.0, DescriptionText.CONFIG.FADE_DURATION_MS);
   }
+
+  // FadeOut removed, replaced by dissolve
 }
 
 
@@ -903,8 +868,8 @@ class ChoicePanel {
     this.titleMesh = null;
     this.startTexture = null;
     this.endTexture = null;
+    // *** NEW: Add visibility flag ***
     this.isVisible = false;
-    this.mesh = null; // Initialize mesh as null
 
 
     const panelHeight = ChoicePanel.CONFIG.PANEL_WIDTH / ChoicePanel.CONFIG.ASPECT;
@@ -926,7 +891,7 @@ class ChoicePanel {
 
     if (this.endThumbnailUrl) {
       this.endTexture = this.textureLoader.load(this.endThumbnailUrl,
-        () => console.log('End thumb loaded for', this.title),
+        () => console.log('End thumb loaded'),
         undefined,
         (err) => console.warn('Failed to load end thumbnail:', this.endThumbnailUrl, err)
       );
@@ -941,8 +906,9 @@ class ChoicePanel {
       },
       vertexShader: ChoicePanel.SHADER.vertexShader,
       fragmentShader: ChoicePanel.SHADER.fragmentShader,
+      // *** Start transparent ***
       transparent: true,
-      opacity: 0, // Start invisible
+      opacity: 0,
     });
 
 
@@ -955,34 +921,22 @@ class ChoicePanel {
       zPos
     );
 
-    // Don't add to scene immediately
-    // this.scene.add(this.mesh);
+    this.scene.add(this.mesh);
     this.createTitleMesh();
   }
 
-  // *** NEW: Method to add mesh to scene ***
-  addToScene = () => {
-      if (this.mesh && !this.mesh.parent) {
-          this.scene.add(this.mesh);
-      }
-  }
-
-
+  // *** NEW: Fade in method ***
   fadeIn = (duration = 500) => {
     return new Promise((resolve) => {
-      if (!this.mesh) return resolve(); // Safety check
       this.isVisible = true;
       const startOpacity = this.mesh.material.opacity;
       const startTime = performance.now();
 
       const tick = (now) => {
-         if (!this.mesh || !this.mesh.material) return; // Safety check in tick
-
         const elapsed = now - startTime;
         const progress = Math.min(elapsed / duration, 1.0);
         this.mesh.material.opacity = THREE.MathUtils.lerp(startOpacity, 1.0, progress);
-        if (this.titleMesh && this.titleMesh.material) this.titleMesh.material.opacity = this.mesh.material.opacity;
-
+        if (this.titleMesh) this.titleMesh.material.opacity = this.mesh.material.opacity;
 
         if (progress < 1.0) {
           requestAnimationFrame(tick);
@@ -996,8 +950,8 @@ class ChoicePanel {
 
 
   swapToEndThumbnail = () => {
-    if (!this.endTexture || !this.mesh || !this.mesh.material) { // Added material check
-        console.log("No end texture or mesh/material found, not swapping.");
+    if (!this.endTexture || !this.mesh) {
+        console.log("No end texture found, not swapping.");
         return;
     }
     try {
@@ -1009,8 +963,7 @@ class ChoicePanel {
   }
 
   createTitleMesh = () => {
-    if (!this.font || !this.title || !this.mesh) return; // Added mesh check
-
+    if (!this.font || !this.title) return;
 
     const config = ChoicePanel.CONFIG.TITLE_TEXT_CONFIG;
     const panelHeight = ChoicePanel.CONFIG.PANEL_WIDTH / ChoicePanel.CONFIG.ASPECT;
@@ -1024,20 +977,21 @@ class ChoicePanel {
     });
     geo.center();
 
+    // *** Start transparent ***
     const mat = new THREE.MeshBasicMaterial({
         color: config.COLOR,
         transparent: true,
-        opacity: 0, // Start invisible
+        opacity: 0,
     });
     this.titleMesh = new THREE.Mesh(geo, mat);
 
     this.titleMesh.position.y = (-panelHeight / 2) + config.Y_OFFSET;
 
-    this.mesh.add(this.titleMesh); // Add title as child
+    this.mesh.add(this.titleMesh);
   }
 
   update = (elapsedTime, isSelected) => {
-    if (!this.mesh || !this.isVisible) return;
+    if (!this.mesh || !this.isVisible) return; // Only update if visible
 
 
     this.mesh.material.uniforms.time.value = elapsedTime;
@@ -1057,14 +1011,14 @@ class ChoicePanel {
 class TimerBar {
   CONFIG = {
     DURATION: 15000, // ms
-    BAR_HEIGHT: 0.1,
-    Y_OFFSET: 0.7, // Distance above panels
+    BAR_HEIGHT: 0.05,
+    Y_OFFSET: 0.3, // Distance above panels
     COLORS: {
       GREEN: new THREE.Color(0x00ff00),
       YELLOW: new THREE.Color(0xffff00),
       RED: new THREE.Color(0xff0000)
     },
-    MAX_PARTICLES: 5000 // max particles when dissolving
+    MAX_PARTICLES: 2000 // max particles when dissolving
   };
 
   constructor(scene, particleManager, onTimeout, zPos) {
@@ -1074,6 +1028,7 @@ class TimerBar {
     this.active = false;
     this.startTime = 0;
     this.mesh = null;
+    // *** NEW: Visibility flag ***
     this.isVisible = false;
 
     this.createMesh(zPos);
@@ -1084,38 +1039,28 @@ class TimerBar {
     const panelHeight = ChoicePanel.CONFIG.PANEL_WIDTH / ChoicePanel.CONFIG.ASPECT;
 
     const geometry = new THREE.PlaneGeometry(panelTotalWidth, this.CONFIG.BAR_HEIGHT);
+    // *** Start transparent ***
     const material = new THREE.MeshBasicMaterial({
         color: this.CONFIG.COLORS.GREEN,
         transparent: true,
-        opacity: 0, // Start invisible
+        opacity: 0,
     });
 
     this.mesh = new THREE.Mesh(geometry, material);
     this.mesh.position.y = ChoicePanel.CONFIG.Y_OFFSET + (panelHeight / 2) + this.CONFIG.Y_OFFSET;
     this.mesh.position.z = zPos;
 
-    // Don't add to scene immediately
-    // this.scene.add(this.mesh);
+    this.scene.add(this.mesh);
   }
 
-  // *** NEW: Method to add mesh to scene ***
-  addToScene = () => {
-      if (this.mesh && !this.mesh.parent) {
-          this.scene.add(this.mesh);
-      }
-  }
-
-
+  // *** NEW: Fade in method ***
   fadeIn = (duration = 500) => {
     return new Promise((resolve) => {
-      if (!this.mesh) return resolve(); // Safety check
       this.isVisible = true;
       const startOpacity = this.mesh.material.opacity;
       const startTime = performance.now();
 
       const tick = (now) => {
-         if (!this.mesh || !this.mesh.material) return; // Safety check in tick
-
         const elapsed = now - startTime;
         const progress = Math.min(elapsed / duration, 1.0);
         this.mesh.material.opacity = THREE.MathUtils.lerp(startOpacity, 1.0, progress);
@@ -1144,7 +1089,7 @@ class TimerBar {
   }
 
   update = (elapsedTime) => {
-    if (!this.active || !this.mesh || !this.isVisible) return;
+    if (!this.active || !this.mesh || !this.isVisible) return; // Check visibility
 
 
     const progress = this.getProgress(elapsedTime);
@@ -1168,15 +1113,13 @@ class TimerBar {
 
   onChoiceMade = (isTimeout, remainingProgress) => {
     this.active = false;
-    let promise = Promise.resolve(); // Default to resolved promise
     if (isTimeout) {
       this.particleManager.removeObject(this.mesh);
     } else {
       const particleCount = Math.max(10, Math.floor(this.CONFIG.MAX_PARTICLES * remainingProgress));
-      promise = this.particleManager.dissolveObject(this.mesh, particleCount); // Store the dissolve promise
+      this.particleManager.dissolveObject(this.mesh, particleCount);
     }
     this.mesh = null;
-    return promise; // Return the promise
   }
 
   dispose = () => {
@@ -1212,7 +1155,6 @@ class GameEngine {
 
     this.levels = new Map();
     this.currentLevel = null;
-    // Keep direct refs for easy access during selection state
     this.panels = { left: null, right: null };
     this.timerBar = null;
   }
@@ -1252,36 +1194,32 @@ class GameEngine {
 
   };
 
-  // Creates level objects but doesn't make them visible or active
   createLevel = (index) => {
     const mission = GAME_CONFIG.MISSIONS[index];
     if (!mission) return null;
 
     const levelZ = index * ChoicePanel.CONFIG.LEVEL_Z_SPACING;
 
-    // Clean up just in case (safer than relying only on dissolve)
+    // Clean up previous level potential remnants
     const oldLevel = this.levels.get(index);
     if (oldLevel) {
-        console.log(`Disposing old level ${index} elements.`);
         oldLevel.timer?.dispose();
         oldLevel.panels.left?.mesh && this.particleManager.removeObject(oldLevel.panels.left.mesh);
         oldLevel.panels.right?.mesh && this.particleManager.removeObject(oldLevel.panels.right.mesh);
-        this.levels.delete(index); // Remove old data
     }
 
-    console.log(`Creating level ${index} elements.`);
+
     const newPanels = {
       left: new ChoicePanel(this.sceneManager.scene, mission.left, 'left', this.font, levelZ),
       right: new ChoicePanel(this.sceneManager.scene, mission.right, 'right', this.font, levelZ)
     };
     const newTimer = new TimerBar(this.sceneManager.scene, this.particleManager, this.onTimerTimeout, levelZ);
 
-    const levelData = { panels: newPanels, timer: newTimer, index: index };
+    const levelData = { panels: newPanels, timer: newTimer };
     this.levels.set(index, levelData);
     return levelData;
   }
 
-  // Starts the process: Description -> Narration -> Panels/Activate
   loadLevel = (index) => {
     this.currentMissionIndex = index;
     const mission = GAME_CONFIG.MISSIONS[index];
@@ -1292,125 +1230,86 @@ class GameEngine {
       return;
     }
 
-    this.state = 'loading_level';
-    this.setInstructionsCallback('');
+    // Don't create panels/timer yet, wait for narration/description
+    this.state = 'narrating';
+    this.setInstructionsCallback('...'); // Placeholder for narration
 
-    // Pre-create level elements (invisible)
-    this.currentLevel = this.levels.get(index) || this.createLevel(index);
-     if (!this.currentLevel) {
-       console.error("Failed to get or create level in loadLevel", index);
-       this.sceneManager.fadeTo(1, 1.0).then(this.showEndScreen);
-       return;
-     }
-     // Update refs immediately, although they are invisible
-     this.panels = this.currentLevel.panels;
-     this.timerBar = this.currentLevel.timer;
-
-    // Start Description/Narration sequence according to new flow
-    this.handleLevelIntroSequence(mission);
+    this.audioManager.playNarration(mission.narrationUrl, this.onNarrationEnded.bind(this));
   }
 
-  // *** MODIFIED Flow: Description -> Narration & Panel Fade In -> Activate ***
-  handleLevelIntroSequence = async (mission) => {
-    let narrationEndPromise = Promise.resolve();
-    let descriptionDissolvePromise = Promise.resolve();
+  onNarrationEnded = async () => {
+    const mission = GAME_CONFIG.MISSIONS[this.currentMissionIndex];
+    if (!mission) return;
 
-    // 1. Show Description (if exists) & Wait
+    this.setInstructionsCallback('');
+
     if (mission.description) {
       this.state = 'describing';
       this.descriptionTextInstance = new DescriptionText(
-         this.sceneManager.scene,
-         mission.description,
-         this.font,
-         this.sceneManager.camera
+          this.sceneManager.scene,
+          mission.description,
+          this.font,
+          this.sceneManager.camera
       );
+
       await this.descriptionTextInstance.fadeIn();
-      await new Promise(r => setTimeout(r, mission.descriptionStayDurationMs || 3000));
-       // Start dissolving description *now*
-      descriptionDissolvePromise = this.particleManager.dissolveObject(
+      await new Promise(r => setTimeout(r, mission.descriptionStayDurationMs || 3000)); // Default 3s
+
+      await this.particleManager.dissolveObject(
           this.descriptionTextInstance.mesh,
           DescriptionText.CONFIG.DISSOLVE_PARTICLE_COUNT
-       );
+      );
+      this.descriptionTextInstance = null;
+
+      // Create and activate level *after* description dissolves
+      this.createAndActivateLevel(this.currentMissionIndex);
     } else {
-        // If no description, ensure state moves on
-        this.state = 'loading_level'; // Or 'narrating' if narration starts next
+      // No description, create and activate immediately
+      this.createAndActivateLevel(this.currentMissionIndex);
     }
+  }
 
-    // 2. Start Narration (if exists) - concurrent with description dissolve
-    if (mission.narrationUrl) {
-        if (this.state !== 'describing') this.state = 'narrating';
-        this.setInstructionsCallback('...'); // Indicate narration
-        narrationEndPromise = new Promise((resolve) => {
-            this.audioManager.playNarration(mission.narrationUrl, resolve);
-        });
-    }
+  // *** NEW: Separated creation and activation from loadLevel ***
+  createAndActivateLevel = async (index) => {
+     // Ensure level objects are created
+     this.currentLevel = this.levels.get(index) || this.createLevel(index);
+     if (!this.currentLevel) {
+       console.error("Failed to get or create level in createAndActivateLevel", index);
+       this.sceneManager.fadeTo(1, 1.0).then(this.showEndScreen);
+       return;
+     }
 
-    // 3. Wait for description to FINISH dissolving before adding/fading panels
-    await descriptionDissolvePromise;
-    if(this.descriptionTextInstance) this.descriptionTextInstance = null; // Clear ref after await
+     this.panels = this.currentLevel.panels;
+     this.timerBar = this.currentLevel.timer;
 
-    // *** NEW: Add panels/timer to scene AFTER description dissolve ***
-    this.currentLevel.panels.left?.addToScene();
-    this.currentLevel.panels.right?.addToScene();
-    this.currentLevel.timer?.addToScene();
+     // Fade in panels and timer *after* description is gone
+     await Promise.all([
+         this.panels.left.fadeIn(),
+         this.panels.right.fadeIn(),
+         this.timerBar.fadeIn()
+     ]);
 
-
-    // 4. Fade in Panels and Timer (concurrent with potential narration)
-    await this.fadeInPanelsAndTimer(); // Await fade in
-
-    // 5. Activate the level - allows user input
-    this.activateCurrentLevel();
-
-    // Narration continues until it finishes or is stopped by user choice
+     // Now activate
+     this.activateCurrentLevel();
   }
 
 
-  // Fades in the current level's panels and timer
-  fadeInPanelsAndTimer = async () => {
-      if (!this.currentLevel) {
-          console.error("Cannot fade in panels/timer: currentLevel is null.");
-          return;
-      }
-      console.log("Fading in panels and timer for level:", this.currentLevel.index);
-      // Make sure elements exist before trying to fade them in
-      const fadePromises = [];
-      if (this.currentLevel.panels?.left) fadePromises.push(this.currentLevel.panels.left.fadeIn());
-      if (this.currentLevel.panels?.right) fadePromises.push(this.currentLevel.panels.right.fadeIn());
-      if (this.currentLevel.timer) fadePromises.push(this.currentLevel.timer.fadeIn());
-
-      // Ensure panels/timer are fully visible before proceeding
-      if (fadePromises.length > 0) {
-        await Promise.all(fadePromises);
-      }
-      console.log("Finished fading in panels and timer for level:", this.currentLevel.index);
-  }
-
-
-  // Activates the currently loaded level
   activateCurrentLevel = () => {
-    // Check if panels/timer are ready and visible
-    if (!this.currentLevel ||
-        !this.currentLevel.panels.left?.isVisible ||
-        !this.currentLevel.panels.right?.isVisible ||
-        !this.currentLevel.timer?.isVisible) {
-        console.error("Cannot activate level: Elements missing or not visible.", this.currentLevel);
-        return;
-    }
-    // Only activate if we are coming from a state where activation makes sense
-    // Adjusted states: after dissolving description or straight from loading/narrating if no desc
-    if (!['loading_level', 'narrating', 'describing'].includes(this.state)) {
-        console.warn("Attempted to activate level in invalid state:", this.state);
+    if (!this.currentLevel || this.state === 'selection') {
+        console.warn("Attempted to activate level in invalid state or already active:", this.state);
         return;
     }
 
-
-    this.timerBar = this.currentLevel.timer; // Ensure ref is current
+    this.timerBar = this.currentLevel.timer;
+    if (!this.timerBar) {
+        console.error("TimerBar is missing for level activation!");
+        return;
+    }
     this.timerBar.start(this.sceneManager.clock.getElapsedTime());
     this.state = 'selection';
     this.setInstructionsCallback('Use ← and → to choose. Press Enter to select.');
-    window.removeEventListener('keydown', this.onSelectionKey); // Prevent duplicates
+    window.removeEventListener('keydown', this.onSelectionKey);
     window.addEventListener('keydown', this.onSelectionKey);
-    console.log("Level activated:", this.currentLevel.index);
   }
 
 
@@ -1441,21 +1340,11 @@ class GameEngine {
   }
 
   onTimerTimeout = () => {
-    if (this.state === 'selection') {
-       console.log("Timer timed out.");
-       this.selectChoice(true);
-    } else {
-        console.warn("Timer timeout ignored, not in selection state:", this.state);
-    }
+    this.selectChoice(true); // Is a timeout
   };
-
 
   selectChoice = async (isTimeout) => {
     if (this.state !== 'selection') return;
-
-    // Stop narration immediately on choice
-    this.audioManager.stopNarration();
-
 
     const chosenPanel = this.currentLevel.panels[this.selectedPanel];
     if (!chosenPanel) {
@@ -1471,59 +1360,52 @@ class GameEngine {
 
     const unchosenPanel = this.currentLevel.panels[this.selectedPanel === 'left' ? 'right' : 'left'];
 
-    // --- Dissolve timer and unchosen panel concurrently ---
-    let dissolvePromises = [];
-    if (this.timerBar) {
-        const remainingProgress = this.timerBar.getProgress(this.sceneManager.clock.getElapsedTime());
-        dissolvePromises.push(this.timerBar.onChoiceMade(isTimeout, remainingProgress));
-        this.timerBar = null;
-    }
+    // 1. Handle Timer Dissolve
+    const remainingProgress = this.timerBar.getProgress(this.sceneManager.clock.getElapsedTime());
+    this.timerBar.onChoiceMade(isTimeout, remainingProgress);
+    this.timerBar = null;
+
+    // 2. Dissolve unchosen panel
     if (unchosenPanel && unchosenPanel.mesh) {
-      dissolvePromises.push(this.particleManager.dissolveObject(unchosenPanel.mesh));
+      this.particleManager.dissolveObject(unchosenPanel.mesh);
       this.currentLevel.panels[this.selectedPanel === 'left' ? 'right' : 'left'] = null;
     }
-    // --- End concurrent dissolves ---
 
-    // Remove the title from the *chosen* panel (instantly)
+    // 3. Remove the title from the *chosen* panel
     if (chosenPanel && chosenPanel.titleMesh) {
        this.particleManager.removeObject(chosenPanel.titleMesh);
        chosenPanel.titleMesh = null;
     }
 
-    // Zoom into the chosen panel (wait for it)
+    // 4. Zoom into the chosen panel
     if (chosenPanel && chosenPanel.mesh) {
       await this.sceneManager.zoomToPanel(chosenPanel.mesh);
     }
 
-    // Fade out 3D scene to black (wait for it)
-    await this.sceneManager.fadeTo(1, 0.5);
+    // 5. Fade out 3D scene to black
+    await this.sceneManager.fadeTo(1, 0.5); // Fade to black
     this.sceneManager.setPostProcessingEnabled(false);
 
-    // Tell React to show the YouTube video
+    // 6. Tell React to show the YouTube video
     this.showYoutubeCallback(chosenPanel.youtubeId);
   };
 
-
   onVideoEnded = async () => {
     console.log('Video finished. Processing end frame.');
-    this.state = 'travelling';
+    this.state = 'travelling'; // Set new state
 
     this.sceneManager.setPostProcessingEnabled(true);
 
-    // Get the panel that was chosen in the *previous* level
-    const chosenPanel = this.levels.get(this.currentMissionIndex)?.panels[this.selectedPanel];
+    const chosenPanel = this.currentLevel.panels[this.selectedPanel];
 
-
-    // 1. Swap to end thumbnail *before* making scene visible
+    // 1. Swap to end thumbnail *before* fade-in
     if (chosenPanel) {
       chosenPanel.swapToEndThumbnail();
-    } else {
-       console.warn("Could not find chosen panel to swap thumbnail for level:", this.currentMissionIndex);
     }
 
-
-    // 2. *** Make scene instantly visible showing end frame ***
-    this.sceneManager.fadePass.material.uniforms.uFade.value = 0.0;
+    // 2. Fade back IN to the zoomed-in panel
+    // *** FIX: Use static SceneManager.CONFIG ***
+    await this.sceneManager.fadeTo(0, SceneManager.CONFIG.END_FRAME_FADE_IN_DURATION);
 
 
     // 3. Wait a moment to see the end thumbnail
@@ -1532,7 +1414,7 @@ class GameEngine {
     // --- Transition Starts ---
     const nextMissionIndex = this.currentMissionIndex + 1;
 
-    // 4. Pre-create next level's objects (invisible) if it exists
+    // 4. Pre-create next level if it exists (no visual change yet)
     if (nextMissionIndex < GAME_CONFIG.MISSIONS.length) {
        this.createLevel(nextMissionIndex);
     }
@@ -1546,6 +1428,7 @@ class GameEngine {
     } else {
       // Move camera to new Z position
       const nextLevelZ = nextMissionIndex * ChoicePanel.CONFIG.LEVEL_Z_SPACING;
+      // *** Use static SceneManager.CONFIG ***
       const newCameraZ = nextLevelZ + SceneManager.CONFIG.CAMERA_Z;
       cameraMovePromise = this.sceneManager.resetCamera(newCameraZ);
     }
@@ -1554,10 +1437,9 @@ class GameEngine {
     let dissolvePromise = Promise.resolve();
     if (chosenPanel && chosenPanel.mesh) {
       dissolvePromise = this.particleManager.dissolveObject(chosenPanel.mesh);
-      // Clean up ref from the stored level data
-      const oldLevelData = this.levels.get(this.currentMissionIndex);
-      if (oldLevelData) {
-         oldLevelData.panels[this.selectedPanel] = null;
+      // Remove from old level object immediately AFTER getting the mesh ref
+      if (this.currentLevel) {
+         this.currentLevel.panels[this.selectedPanel] = null;
       }
     }
 
@@ -1568,9 +1450,9 @@ class GameEngine {
 
     // 8. Load or end game
     if (nextMissionIndex >= GAME_CONFIG.MISSIONS.length) {
-      await this.showEndScreen();
+      await this.showEndScreen(); // Await the async end screen
     } else {
-      // Load the next level (starts Description -> Narration -> Panels Fade In -> Activate)
+      // Load the next level (starts narration -> description -> activate)
       this.loadLevel(nextMissionIndex);
     }
   }
@@ -1581,6 +1463,7 @@ class GameEngine {
 
     // Position text in front of the camera
     const camPos = this.sceneManager.camera.position;
+    // *** Use static SceneManager.CONFIG ***
     const textPos = new THREE.Vector3(camPos.x, camPos.y, camPos.z - SceneManager.CONFIG.CAMERA_Z);
 
 
@@ -1605,7 +1488,7 @@ class GameEngine {
       this.startText.update(elapsedTime);
     }
 
-    // Only update active level's panels/timer if in selection state
+    // Only update active level's panels/timer
     if (this.state === 'selection' && this.currentLevel) {
       if (this.currentLevel.panels?.left) this.currentLevel.panels.left.update(elapsedTime, this.selectedPanel === 'left');
       if (this.currentLevel.panels?.right) this.currentLevel.panels.right.update(elapsedTime, this.selectedPanel === 'right');
@@ -1616,6 +1499,8 @@ class GameEngine {
     if (this.state === 'end' && this.endText) {
       this.endText.update(elapsedTime);
     }
+
+    // Description text is managed via promises, no update needed here
 
     this.starfield.update();
     this.particleManager.update();
@@ -1644,7 +1529,7 @@ class GameEngine {
 
     this.startText.mesh && this.particleManager.removeObject(this.startText.mesh);
     this.endText?.mesh && this.particleManager.removeObject(this.endText.mesh);
-    this.descriptionTextInstance?.mesh && this.particleManager.removeObject(this.descriptionTextInstance.mesh);
+    this.descriptionTextInstance?.mesh && this.particleManager.removeObject(this.descriptionTextInstance.mesh); // Use instance name
     this.audioManager.dispose();
     this.sceneManager.dispose();
   };
@@ -1889,5 +1774,4 @@ export default function Home() {
     </main>
   );
 }
-
 
